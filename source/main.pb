@@ -1,4 +1,4 @@
-﻿; main.pb | Easyjot
+; main.pb | Easyjot
 EnableExplicit
 IncludePath "includes"
 XIncludeFile "main_screen.pbf"
@@ -24,8 +24,9 @@ Define.b user_quits = #False
 
 Declare SetDefaults()
 Declare UpdateTitleBar()
+Declare UpdateFileStructure(temp_file, temp_path.s)
 Declare Quit()
-Declare WindowSizeChanges()
+Declare WindowSizeHandler()
 
 
 Procedure About(event)
@@ -46,28 +47,15 @@ Procedure AppMain()
   OpenWindow_Main()
   SetDefaults()
   
-  Define this_window_id = WindowID(Window_Main)
-  BindEvent(#PB_Event_SizeWindow, @WindowSizeChanges(), this_window_id)
-  BindEvent(#PB_Event_CloseWindow, @Quit(), this_window_id, #MenuBtn_Quit)
-      
-  Repeat
-    ; Main window loop. Poll for latest event
-    ;event = Window_Main_Events(WaitWindowEvent())
-    
-
-;     Select event
-;       Case #PB_Event_SizeWindow
-;         ResizeGadget(Editor_Main, #PB_Ignore, #PB_Ignore, 
-;                      WindowWidth(Window_Main), WindowHeight(Window_Main) - MenuHeight())
-;       Case #False
-;         ; User clicked X. Begin formal quitting procedure.
-;         If Quit(event)
-;           user_quits = #True
-;         EndIf
-;     EndSelect
-  Until Window_Main_Events(WaitWindowEvent()) = #False
+  BindEvent(#PB_Event_SizeWindow, @WindowSizeHandler())
+  ;BindEvent(#PB_Event_CloseWindow, @Quit(), this_window_id, #MenuBtn_Quit)
   
-  Quit()
+  While user_quits = #False
+    event = Window_Main_Events(WaitWindowEvent())
+    Select event
+      Case #False: Quit()
+    EndSelect
+  Wend
 EndProcedure
 
 
@@ -77,7 +65,7 @@ Procedure LoadFile(event)
   Define temp_file
   
   ; Prompt for the text file so we can read it into the program
-  temp_path = OpenFileRequester("Load Note", "", #File_Types, WindowID(Window_Main))
+  temp_path = OpenFileRequester("Load Note", "", #File_Types, 0)
   
   If temp_path <> ""
     temp_file = OpenFile(#PB_Any, temp_path)
@@ -93,13 +81,7 @@ Procedure LoadFile(event)
     SetGadgetText(Editor_Main, file_source_contents)
     
     ; We're good to store the file in Text.File
-    ; TODO: DRY
-    Text.File\file_source = temp_file
-    Text.File\file_with_path = temp_path
-    Text.File\file_path_only = GetPathPart(Text.File\file_with_path)
-    Text.File\file_name = GetFilePart(Text.File\file_with_path)
-    Text.File\is_new = #False
-    Text.File\is_unsaved = #False
+    UpdateFileStructure(temp_file, temp_path)
     UpdateTitleBar()
     
     ProcedureReturn #True
@@ -122,19 +104,16 @@ Procedure Quit()
   If Text.File\is_unsaved
     user_confirm = MessageRequester("Unsaved file!", 
                                     "Are you sure you want to quit WITHOUT saving?",
-                                    #PB_MessageRequester_YesNo | #PB_MessageRequester_Warning, 
-                                    WindowID(Window_Main))
+                                    #PB_MessageRequester_YesNo | #PB_MessageRequester_Warning)
   EndIf
   
   Select user_confirm
     Case #PB_MessageRequester_No
       If SaveFile(0)
-        ProcedureReturn #True
+        user_quits = #True
       EndIf
-    Case #PB_MessageRequester_Yes
-      ProcedureReturn #True
-    Default
-      ProcedureReturn #False
+    Case #PB_MessageRequester_Yes : user_quits = #True
+    Default : user_quits = #False
   EndSelect
   
 EndProcedure
@@ -145,6 +124,7 @@ Procedure SaveFile(event)
   Define temp_file
   Define.s temp_path
   Define.s temp_name
+  Define.b user_canceled = #False
   
   If Text.File\is_new
     ; Set the filename to default
@@ -154,43 +134,37 @@ Procedure SaveFile(event)
     temp_name = Text.File\file_name
   EndIf
   
-  temp_path = SaveFileRequester("Save as", temp_name, #File_Types, WindowID(Window_Main))
+  temp_path = SaveFileRequester("Save as", temp_name, #File_Types, 0)
 
   If temp_path <> ""
     ; File path should be valid. We'll store it in Text.File later
     temp_file = OpenFile(#PB_Any, temp_path, #PB_UTF8)
   Else
-    ProcedureReturn #False
+    ; The user cancelled the requestor
+    user_canceled = #True
+    MessageRequester("Save Canceled", 
+                     "The save dialog was canceled without selecting a save location." +
+                     " The file will not be saved.", #PB_MessageRequester_Error)
   EndIf
   
   ; Now we should have a file.
-  If IsFile(temp_file)
-    If WriteString(temp_file, GetGadgetText(Editor_Main), #PB_UTF8)
+  If IsFile(temp_file) And Not user_canceled
+    If WriteString(temp_file, GetGadgetText(Editor_Main))
+      MessageRequester("Save complete", "The file has been saved.")
+      
       ; Make it official and update things
-      Text.File\file_source = temp_file
-      Text.File\file_with_path = temp_path
-      Text.File\file_path_only = GetPathPart(Text.File\file_with_path)
-      Text.File\file_name = GetFilePart(Text.File\file_with_path)
-      Text.File\is_new = #False
-      Text.File\is_unsaved = #False
+      UpdateFileStructure(temp_file, temp_path)
       UpdateTitleBar()
       
-      MessageRequester("Save complete", "The file has been saved.")
-      ProcedureReturn #True
     Else
       ; For some reason the file did not save, so let the user know
       MessageRequester("Save incomplete", 
                        "Failed to write to file. Possible permission issue.", 
                        #PB_MessageRequester_Error)
     EndIf
-  Else
-    MessageRequester("File invalid",
-                     "The file you attempted to save could not be recognized.",
-                     #PB_MessageRequester_Error)
+    
+    CloseFile(temp_file)
   EndIf
-  
-  ; If we haven't returned True by now, there was an error saving.
-  ProcedureReturn #False
 EndProcedure
 
 
@@ -259,22 +233,25 @@ Procedure UpdateTitleBar()
   EndIf
   
   SetWindowTitle(Window_Main, full_title)
-  ProcedureReturn #True
 EndProcedure
 
 
-Procedure WindowSizeChanges()
+Procedure UpdateFileStructure(temp_file, temp_path.s)
+  Shared Text.File
+  
+  Text.File\file_source = temp_file
+  Text.File\file_with_path = temp_path
+  Text.File\file_path_only = GetPathPart(Text.File\file_with_path)
+  Text.File\file_name = GetFilePart(Text.File\file_with_path)
+  Text.File\is_new = #False
+  Text.File\is_unsaved = #False
+EndProcedure
+
+
+Procedure WindowSizeHandler()
   ResizeGadget(Editor_Main, #PB_Ignore, #PB_Ignore, 
                WindowWidth(Window_Main), WindowHeight(Window_Main) - MenuHeight())
 EndProcedure
 
 
 AppMain()
-
-; IDE Options = PureBasic 6.12 LTS (Windows - x64)
-; CursorPosition = 107
-; FirstLine = 67
-; Folding = Wj
-; Markers = 197,207
-; EnableXP
-; DPIAware
